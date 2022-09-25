@@ -151,6 +151,8 @@ def main():
                     ax.axis('off')
                     ax.set_title(f'predicted: {class_names[preds[j]]}')
                     imshow(inputs.cpu().data[j])
+                    filename = dataloaders['val'].dataset.samples[i][0]
+                    print(f"File: {filename} Predicted: {class_names[preds[j]]}")
 
                     if images_so_far == num_images:
                         model.train(mode=was_training)
@@ -181,7 +183,7 @@ def main():
         param.requires_grad = False
 
     num_ftrs = model_conv.fc.in_features
-    model_conv.fc = nn.Linear(num_ftrs, 5 )
+    model_conv.fc = nn.Linear(num_ftrs, 5)
     model_conv = model_conv.to(device)
     criterion = nn.CrossEntropyLoss()
 
