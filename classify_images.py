@@ -45,7 +45,7 @@ def main():
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    def imshow(inp, title=None):
+    def imshow(inp, title=None, filename=None):
         """Imshow for Tensor."""
         inp = inp.numpy().transpose((1, 2, 0))
         mean = np.array([0.485, 0.456, 0.406])
@@ -55,7 +55,8 @@ def main():
         plt.imshow(inp)
         if title is not None:
             plt.title(title)
-        plt.pause(0.001)  # pause a bit so that plots are updated
+        if filename is not None:
+            plt.savefig(f"output/{filename}.png")
 
     # Get a batch of training data
     inputs, classes = next(iter(dataloaders['train']))
@@ -63,7 +64,7 @@ def main():
     # Make a grid from batch
     out = torchvision.utils.make_grid(inputs)
 
-    imshow(out, title=[class_names[x] for x in classes])
+    # imshow(out, title=[class_names[x] for x in classes])
 
     def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
         since = time.time()
@@ -108,6 +109,7 @@ def main():
                     # statistics
                     running_loss += loss.item() * inputs.size(0)
                     running_corrects += torch.sum(preds == labels.data)
+                    print(preds, labels.data)
                 if phase == 'train':
                     scheduler.step()
 
@@ -146,13 +148,7 @@ def main():
                 _, preds = torch.max(outputs, 1)
 
                 for j in range(inputs.size()[0]):
-                    images_so_far += 1
-                    ax = plt.subplot(num_images // 2, 2, images_so_far)
-                    ax.axis('off')
-                    ax.set_title(f'predicted: {class_names[preds[j]]}')
-                    imshow(inputs.cpu().data[j])
-                    filename = dataloaders['val'].dataset.samples[i][0]
-                    print(f"File: {filename} Predicted: {class_names[preds[j]]}")
+                    imshow(inputs.cpu().data[j], title=class_names[preds[j]], filename=f"{i}_{j}")
 
                     if images_so_far == num_images:
                         model.train(mode=was_training)
@@ -192,12 +188,12 @@ def main():
     optimizer_conv = optim.SGD(model_conv.fc.parameters(), lr=0.001, momentum=0.9)
 
     # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_conv, step_size=7, gamma=0.1)
-    model_conv = train_model(model_conv, criterion, optimizer_conv,
-                             exp_lr_scheduler, num_epochs=25)
-    visualize_model(model_conv)
-    plt.ioff()
-    plt.show()
+    # exp_lr_scheduler = lr_scheduler.StepLR(optimizer_conv, step_size=7, gamma=0.1)
+    # model_conv = train_model(model_conv, criterion, optimizer_conv,
+    #                          exp_lr_scheduler, num_epochs=25)
+    # visualize_model(model_conv)
+    # plt.ioff()
+    # plt.show()
 
 
 if __name__ == '__main__':
