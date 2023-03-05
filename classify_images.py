@@ -20,13 +20,19 @@ def main():
     plt.ion()  # interactive mode
     data_transforms = {
         'train': transforms.Compose([
+            # https://www.geeksforgeeks.org/randomresizedcrop-method-in-python-pytorch/
+            # https://pytorch.org/vision/main/generated/torchvision.transforms.RandomResizedCrop.html
             transforms.RandomResizedCrop(224),
+            # https://pytorch.org/vision/main/generated/torchvision.transforms.RandomHorizontalFlip.html
             transforms.RandomHorizontalFlip(),
+            # https://pytorch.org/vision/main/generated/torchvision.transforms.ToTensor.html
             transforms.ToTensor(),
+            # https://pytorch.org/docs/stable/generated/torch.nn.functional.normalize.html
+            # https://stackoverflow.com/questions/58151507/why-pytorch-officially-use-mean-0-485-0-456-0-406-and-std-0-229-0-224-0-2
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ]),
         'val': transforms.Compose([
-            transforms.Resize(256),
+            # transforms.Resize(256),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
@@ -134,6 +140,7 @@ def main():
         return model
 
     def visualize_model(model, num_images=6):
+        print("Model visualization")
         was_training = model.training
         model.eval()
         images_so_far = 0
@@ -160,7 +167,7 @@ def main():
     num_ftrs = model_ft.fc.in_features
     # Here the size of each output sample is set to 2.
     # Alternatively, it can be generalized to nn.Linear(num_ftrs, len(class_names)).
-    model_ft.fc = nn.Linear(num_ftrs, 5)
+    model_ft.fc = nn.Linear(num_ftrs, len(class_names))
     model_ft = model_ft.to(device)
 
     criterion = nn.CrossEntropyLoss()
@@ -171,21 +178,21 @@ def main():
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
     model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                           num_epochs=25)
+                           num_epochs=1)
     visualize_model(model_ft)
 
-    model_conv = torchvision.models.resnet18(pretrained=True)
-    for param in model_conv.parameters():
-        param.requires_grad = False
-
-    num_ftrs = model_conv.fc.in_features
-    model_conv.fc = nn.Linear(num_ftrs, 5)
-    model_conv = model_conv.to(device)
-    criterion = nn.CrossEntropyLoss()
+    # model_conv = torchvision.models.resnet18(pretrained=True)
+    # for param in model_conv.parameters():
+    #     param.requires_grad = False
+    #
+    # num_ftrs = model_conv.fc.in_features
+    # model_conv.fc = nn.Linear(num_ftrs, 5)
+    # model_conv = model_conv.to(device)
+    # criterion = nn.CrossEntropyLoss()
 
     # Observe that only parameters of final layer are being optimized as
     # opposed to before.
-    optimizer_conv = optim.SGD(model_conv.fc.parameters(), lr=0.001, momentum=0.9)
+    # optimizer_conv = optim.SGD(model_conv.fc.parameters(), lr=0.001, momentum=0.9)
 
     # Decay LR by a factor of 0.1 every 7 epochs
     # exp_lr_scheduler = lr_scheduler.StepLR(optimizer_conv, step_size=7, gamma=0.1)
