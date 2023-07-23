@@ -155,7 +155,7 @@ def main():
                 _, preds = torch.max(outputs, 1)
 
                 for j in range(inputs.size()[0]):
-                    imshow(inputs.cpu().data[j], title=class_names[preds[j]], filename=f"{i}_{j}")
+                    imshow(inputs.cpu().data[j], title=f"{class_names[preds[j]]}/{class_names[labels[j]]}", filename=f"{i}_{j}")
 
                     if images_so_far == num_images:
                         model.train(mode=was_training)
@@ -178,7 +178,7 @@ def main():
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
     model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                           num_epochs=1)
+                           num_epochs=25)
     visualize_model(model_ft)
 
     # model_conv = torchvision.models.resnet18(pretrained=True)
