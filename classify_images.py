@@ -5,7 +5,9 @@ import os
 import time
 
 import matplotlib.pyplot as plt
+import numpy
 import numpy as np
+import pandas
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
@@ -51,7 +53,7 @@ def main():
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    def imshow(inp, title=None, filename=None):
+    def imshow(inp, title=None, filename=None, path=None):
         """Imshow for Tensor."""
         inp = inp.numpy().transpose((1, 2, 0))
         mean = np.array([0.485, 0.456, 0.406])
@@ -62,7 +64,9 @@ def main():
         if title is not None:
             plt.title(title)
         if filename is not None:
-            plt.savefig(f"output/{filename}.png")
+            if not os.path.exists(path):
+                os.makedirs(path)
+            plt.savefig(os.path.join(path, f"{filename}.png"))
 
     # Get a batch of training data
     inputs, classes = next(iter(dataloaders['train']))
@@ -139,6 +143,9 @@ def main():
         model.load_state_dict(best_model_wts)
         return model
 
+    confusion_matrix = numpy.zeros((len(class_names), len(class_names)))
+    confusion_matrix = pandas.DataFrame(confusion_matrix, index=class_names, columns=class_names)
+
     def visualize_model(model, num_images=6):
         print("Model visualization")
         was_training = model.training
@@ -150,19 +157,26 @@ def main():
             for i, (inputs, labels) in enumerate(dataloaders['val']):
                 inputs = inputs.to(device)
                 labels = labels.to(device)
-
                 outputs = model(inputs)
                 _, preds = torch.max(outputs, 1)
 
                 for j in range(inputs.size()[0]):
-                    imshow(inputs.cpu().data[j], title=f"{class_names[preds[j]]}/{class_names[labels[j]]}", filename=f"{i}_{j}")
+                    correct_class = class_names[labels[j]]
+                    predicted_class = class_names[preds[j]]
+                    confusion_matrix.loc[correct_class, predicted_class] += 1
+                    path = os.path.join("output", correct_class,
+                                        "Správně zařazené" if predicted_class == correct_class else predicted_class
+                                        )
+                    title = correct_class if predicted_class == correct_class \
+                        else f"{correct_class}, predicted as {predicted_class}"
+                    imshow(inputs.cpu().data[j], title=title, filename=f"{i}_{j}", path=path)
 
                     if images_so_far == num_images:
                         model.train(mode=was_training)
                         return
             model.train(mode=was_training)
 
-    model_ft = models.resnet18(pretrained=True)
+    model_ft = models.resnet50(pretrained=True)
 
     num_ftrs = model_ft.fc.in_features
     # Here the size of each output sample is set to 2.
@@ -180,6 +194,7 @@ def main():
     model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
                            num_epochs=25)
     visualize_model(model_ft)
+    confusion_matrix.to_excel("confusion_matrix.xlsx")
 
     # model_conv = torchvision.models.resnet18(pretrained=True)
     # for param in model_conv.parameters():
