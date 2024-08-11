@@ -8,3 +8,8 @@
 /.idea/inspectionProfiles/profiles_settings.xml
 /.idea/inspectionProfiles/Project_Default.xml
 /.idea/vcs.xml
+/data_active_folder/
+/output/
+/data_active_dir/
+/confusion_matrix_output/
+/test_statistics.csv

@@ -1,8 +1,12 @@
 from __future__ import print_function, division
 
 import copy
+import csv
+import itertools
 import os
+import shutil
 import time
+from dataclasses import asdict
 
 import matplotlib.pyplot as plt
 import numpy
@@ -16,18 +20,44 @@ import torchvision
 from torch.optim import lr_scheduler
 from torchvision import datasets, models, transforms
 
+from run_statistics import RunStatistics
+from preprocess_images import GROUP_COUNT
 
-def main():
-    cudnn.benchmark = True
-    plt.ion()  # interactive mode
+PROCESSED_DATA_DIR = 'data_processed'
+ACTIVE_DATA_DIR = 'data_active_dir'
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+NUM_EPOCHS = 25
+
+statistics = []
+
+
+def get_model(model):
+    match model:
+        case "resnet18":
+            return models.resnet18(pretrained=True)
+        case "resnet34":
+            return models.resnet34(pretrained=False)
+        case "resnet50":
+            return models.resnet50(pretrained=True)
+        case "resnet101":
+            return models.resnet101(pretrained=True)
+        case "resnet152":
+            return models.resnet152(pretrained=True)
+        case _:
+            Exception(f"Unknown model: {model}")
+
+
+def get_data(current_val_group):
     data_transforms = {
         'train': transforms.Compose([
             # https://www.geeksforgeeks.org/randomresizedcrop-method-in-python-pytorch/
             # https://pytorch.org/vision/main/generated/torchvision.transforms.RandomResizedCrop.html
-            transforms.RandomResizedCrop(224),
+            # transforms.RandomResizedCrop(224),
             # https://pytorch.org/vision/main/generated/torchvision.transforms.RandomHorizontalFlip.html
-            transforms.RandomHorizontalFlip(),
+            # transforms.RandomHorizontalFlip(),
             # https://pytorch.org/vision/main/generated/torchvision.transforms.ToTensor.html
+            # transforms.Resize(256),
+            transforms.CenterCrop([790, 340]),
             transforms.ToTensor(),
             # https://pytorch.org/docs/stable/generated/torch.nn.functional.normalize.html
             # https://stackoverflow.com/questions/58151507/why-pytorch-officially-use-mean-0-485-0-456-0-406-and-std-0-229-0-224-0-2
@@ -35,14 +65,28 @@ def main():
         ]),
         'val': transforms.Compose([
             # transforms.Resize(256),
-            transforms.CenterCrop(224),
+            transforms.CenterCrop([790, 340]),
+            # transforms.Resize(256),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ]),
     }
 
-    data_dir = 'data_processed'
-    image_datasets = {x: datasets.ImageFolder(os.path.join(data_dir, x),
+    if os.path.exists(ACTIVE_DATA_DIR):
+        shutil.rmtree(ACTIVE_DATA_DIR)
+    os.makedirs(os.path.join(ACTIVE_DATA_DIR, "train"), exist_ok=True)
+    os.makedirs(os.path.join(ACTIVE_DATA_DIR, "val"), exist_ok=True)
+
+    for i in range(1, GROUP_COUNT + 1):
+        target_folder = os.path.join(ACTIVE_DATA_DIR, "val" if i == current_val_group else "train")
+        for category in os.listdir(os.path.join(PROCESSED_DATA_DIR, str(i))):
+            for file in os.listdir(os.path.join(PROCESSED_DATA_DIR, str(i), category)):
+                destination = os.path.join(target_folder, category)
+                if not os.path.exists(destination):
+                    os.makedirs(destination)
+                shutil.copy2(os.path.join(PROCESSED_DATA_DIR, str(i), category, file), os.path.join(destination, file))
+
+    image_datasets = {x: datasets.ImageFolder(os.path.join(ACTIVE_DATA_DIR, x),
                                               data_transforms[x])
                       for x in ['train', 'val']}
     dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=5,
@@ -50,8 +94,22 @@ def main():
                    for x in ['train', 'val']}
     dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
     class_names = image_datasets['train'].classes
+    return dataloaders, dataset_sizes, class_names
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+def save_statistics():
+    dict_list = [asdict(stat) for stat in statistics]
+    fieldnames = dict_list[0].keys() if dict_list else []
+    with open("test_statistics.csv", mode='w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(dict_list)
+
+
+def run_image_classification(model_name, iteration):
+    cudnn.benchmark = True
+    plt.ion()
+    dataloaders, dataset_sizes, class_names = get_data(iteration)
 
     def imshow(inp, title=None, filename=None, path=None):
         """Imshow for Tensor."""
@@ -76,15 +134,14 @@ def main():
 
     # imshow(out, title=[class_names[x] for x in classes])
 
-    def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
+    def train_model(model, criterion, optimizer, scheduler):
         since = time.time()
 
         best_model_wts = copy.deepcopy(model.state_dict())
         best_acc = 0.0
 
-        for epoch in range(num_epochs):
-            print(f'Epoch {epoch}/{num_epochs - 1}')
-            print('-' * 10)
+        for epoch in range(NUM_EPOCHS):
+            print(f'Epoch {epoch}/{NUM_EPOCHS - 1}')
 
             # Each epoch has a training and validation phase
             for phase in ['train', 'val']:
@@ -119,25 +176,23 @@ def main():
                     # statistics
                     running_loss += loss.item() * inputs.size(0)
                     running_corrects += torch.sum(preds == labels.data)
-                    print(preds, labels.data)
                 if phase == 'train':
                     scheduler.step()
 
                 epoch_loss = running_loss / dataset_sizes[phase]
-                epoch_acc = running_corrects.double() / dataset_sizes[phase]
+                epoch_acc = running_corrects.float() / dataset_sizes[phase]
 
-                print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+                statistics.append(
+                    RunStatistics(iteration, model_name, epoch + 1, NUM_EPOCHS, phase, epoch_loss, epoch_acc))
+                save_statistics()
 
                 # deep copy the model
                 if phase == 'val' and epoch_acc > best_acc:
                     best_acc = epoch_acc
                     best_model_wts = copy.deepcopy(model.state_dict())
 
-            print()
-
         time_elapsed = time.time() - since
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
-        print(f'Best val Acc: {best_acc:4f}')
 
         # load best model weights
         model.load_state_dict(best_model_wts)
@@ -176,7 +231,7 @@ def main():
                         return
             model.train(mode=was_training)
 
-    model_ft = models.resnet50(pretrained=True)
+    model_ft = get_model(model_name)
 
     num_ftrs = model_ft.fc.in_features
     # Here the size of each output sample is set to 2.
@@ -191,31 +246,16 @@ def main():
 
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
-    model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                           num_epochs=25)
+    model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
     visualize_model(model_ft)
-    confusion_matrix.to_excel("confusion_matrix.xlsx")
+    confusion_matrix.to_excel(os.path.join("confusion_matrix_output", f"{model_name}_{iteration}.xlsx"))
 
-    # model_conv = torchvision.models.resnet18(pretrained=True)
-    # for param in model_conv.parameters():
-    #     param.requires_grad = False
-    #
-    # num_ftrs = model_conv.fc.in_features
-    # model_conv.fc = nn.Linear(num_ftrs, 5)
-    # model_conv = model_conv.to(device)
-    # criterion = nn.CrossEntropyLoss()
 
-    # Observe that only parameters of final layer are being optimized as
-    # opposed to before.
-    # optimizer_conv = optim.SGD(model_conv.fc.parameters(), lr=0.001, momentum=0.9)
-
-    # Decay LR by a factor of 0.1 every 7 epochs
-    # exp_lr_scheduler = lr_scheduler.StepLR(optimizer_conv, step_size=7, gamma=0.1)
-    # model_conv = train_model(model_conv, criterion, optimizer_conv,
-    #                          exp_lr_scheduler, num_epochs=25)
-    # visualize_model(model_conv)
-    # plt.ioff()
-    # plt.show()
+def main():
+    models = ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]
+    iterations = range(1, GROUP_COUNT)
+    for model, i in itertools.product(models, iterations):
+        run_image_classification(model, i)
 
 
 if __name__ == '__main__':
