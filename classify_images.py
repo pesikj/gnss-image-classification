@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 from dataclasses import asdict
+from typing import List
 
 import matplotlib.pyplot as plt
 import numpy
@@ -27,8 +28,6 @@ PROCESSED_DATA_DIR = 'data_processed'
 ACTIVE_DATA_DIR = 'data_active_dir'
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 NUM_EPOCHS = 25
-
-statistics = []
 
 
 def get_model(model):
@@ -97,7 +96,30 @@ def get_data(current_val_group):
     return dataloaders, dataset_sizes, class_names
 
 
-def save_statistics():
+def load_statistics():
+    statistics = []
+    with open("test_statistics.csv") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            row: dict
+            statistics.append(
+                RunStatistics(cross_validation_iteration=row['cross_validation_iteration'],
+                              model=row["model"],
+                              epoch=row["epoch"],
+                              epoch_total=row["epoch_total"],
+                              phase=row["phase"],
+                              epoch_loss=row["epoch_loss"],
+                              epoch_acc=row["epoch_acc"])
+            )
+        return statistics
+
+
+def check_if_complete(model, statistics):
+    match_items = [x for x in statistics if x.model == model]
+    return len(match_items) == NUM_EPOCHS * 2 * GROUP_COUNT
+
+
+def save_statistics(statistics):
     dict_list = [asdict(stat) for stat in statistics]
     fieldnames = dict_list[0].keys() if dict_list else []
     with open("test_statistics.csv", mode='w', newline='') as file:
@@ -106,7 +128,7 @@ def save_statistics():
         writer.writerows(dict_list)
 
 
-def run_image_classification(model_name, iteration):
+def run_image_classification(model_name, iteration, statistics):
     cudnn.benchmark = True
     plt.ion()
     dataloaders, dataset_sizes, class_names = get_data(iteration)
@@ -183,8 +205,8 @@ def run_image_classification(model_name, iteration):
                 epoch_acc = running_corrects.float() / dataset_sizes[phase]
 
                 statistics.append(
-                    RunStatistics(iteration, model_name, epoch + 1, NUM_EPOCHS, phase, epoch_loss, epoch_acc))
-                save_statistics()
+                    RunStatistics(iteration, model_name, epoch + 1, NUM_EPOCHS, phase, epoch_loss, epoch_acc.item()))
+                save_statistics(statistics)
 
                 # deep copy the model
                 if phase == 'val' and epoch_acc > best_acc:
@@ -252,10 +274,22 @@ def run_image_classification(model_name, iteration):
 
 
 def main():
+    statistics = load_statistics()
+    statistics_new = []
     models = ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]
-    iterations = range(1, GROUP_COUNT)
+    iterations = range(1, GROUP_COUNT + 1)
+    for model in models:
+        model_complete = check_if_complete(model, statistics)
+        if model_complete:
+            for item in statistics:
+                if item.model == model:
+                    statistics_new.append(item)
+    statistics = statistics_new
+    save_statistics(statistics)
     for model, i in itertools.product(models, iterations):
-        run_image_classification(model, i)
+        model_complete = check_if_complete(model, statistics)
+        if not model_complete:
+            run_image_classification(model, i, statistics)
 
 
 if __name__ == '__main__':
