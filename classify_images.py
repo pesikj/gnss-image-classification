@@ -5,6 +5,7 @@ import csv
 import itertools
 import os
 import shutil
+import sys
 import time
 from dataclasses import asdict
 from typing import List
@@ -26,8 +27,8 @@ from preprocess_images import GROUP_COUNT
 
 PROCESSED_DATA_DIR = 'data_processed'
 ACTIVE_DATA_DIR = 'data_active_dir'
+STATISTICS_FILENAME = "test_statistics.csv"
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-NUM_EPOCHS = 25
 
 
 def get_model(model):
@@ -98,37 +99,38 @@ def get_data(current_val_group):
 
 def load_statistics():
     statistics = []
-    with open("test_statistics.csv") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            row: dict
-            statistics.append(
-                RunStatistics(cross_validation_iteration=row['cross_validation_iteration'],
-                              model=row["model"],
-                              epoch=row["epoch"],
-                              epoch_total=row["epoch_total"],
-                              phase=row["phase"],
-                              epoch_loss=row["epoch_loss"],
-                              epoch_acc=row["epoch_acc"])
-            )
-        return statistics
+    if os.path.exists(STATISTICS_FILENAME):
+        with open(STATISTICS_FILENAME) as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                row: dict
+                statistics.append(
+                    RunStatistics(cross_validation_iteration=row['cross_validation_iteration'],
+                                  model=row["model"],
+                                  epoch=row["epoch"],
+                                  epoch_total=row["epoch_total"],
+                                  phase=row["phase"],
+                                  epoch_loss=row["epoch_loss"],
+                                  epoch_acc=row["epoch_acc"])
+                )
+    return statistics
 
 
-def check_if_complete(model, statistics):
+def check_if_complete(model, statistics, num_epochs):
     match_items = [x for x in statistics if x.model == model]
-    return len(match_items) == NUM_EPOCHS * 2 * GROUP_COUNT
+    return len(match_items) == num_epochs * 2 * GROUP_COUNT
 
 
 def save_statistics(statistics):
     dict_list = [asdict(stat) for stat in statistics]
     fieldnames = dict_list[0].keys() if dict_list else []
-    with open("test_statistics.csv", mode='w', newline='') as file:
+    with open(STATISTICS_FILENAME, mode='w', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(dict_list)
 
 
-def run_image_classification(model_name, iteration, statistics):
+def run_image_classification(model_name, iteration, statistics, num_epochs):
     cudnn.benchmark = True
     plt.ion()
     dataloaders, dataset_sizes, class_names = get_data(iteration)
@@ -162,8 +164,8 @@ def run_image_classification(model_name, iteration, statistics):
         best_model_wts = copy.deepcopy(model.state_dict())
         best_acc = 0.0
 
-        for epoch in range(NUM_EPOCHS):
-            print(f'Epoch {epoch}/{NUM_EPOCHS - 1}')
+        for epoch in range(num_epochs):
+            print(f'Epoch {epoch + 1}/{num_epochs}')
 
             # Each epoch has a training and validation phase
             for phase in ['train', 'val']:
@@ -205,7 +207,7 @@ def run_image_classification(model_name, iteration, statistics):
                 epoch_acc = running_corrects.float() / dataset_sizes[phase]
 
                 statistics.append(
-                    RunStatistics(iteration, model_name, epoch + 1, NUM_EPOCHS, phase, epoch_loss, epoch_acc.item()))
+                    RunStatistics(iteration, model_name, epoch + 1, num_epochs, phase, epoch_loss, epoch_acc.item()))
                 save_statistics(statistics)
 
                 # deep copy the model
@@ -273,13 +275,12 @@ def run_image_classification(model_name, iteration, statistics):
     confusion_matrix.to_excel(os.path.join("confusion_matrix_output", f"{model_name}_{iteration}.xlsx"))
 
 
-def main():
+def main(num_epochs, models):
     statistics = load_statistics()
     statistics_new = []
-    models = ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]
     iterations = range(1, GROUP_COUNT + 1)
     for model in models:
-        model_complete = check_if_complete(model, statistics)
+        model_complete = check_if_complete(model, statistics, num_epochs)
         if model_complete:
             for item in statistics:
                 if item.model == model:
@@ -287,10 +288,10 @@ def main():
     statistics = statistics_new
     save_statistics(statistics)
     for model, i in itertools.product(models, iterations):
-        model_complete = check_if_complete(model, statistics)
+        model_complete = check_if_complete(model, statistics, num_epochs)
         if not model_complete:
-            run_image_classification(model, i, statistics)
+            run_image_classification(model, i, statistics, num_epochs)
 
 
 if __name__ == '__main__':
-    main()
+    main(int(sys.argv[1]), sys.argv[2:])
