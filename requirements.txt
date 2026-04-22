@@ -4,3 +4,4 @@ matplotlib
 pillow
 torchvision
 openpyxl
+seaborn

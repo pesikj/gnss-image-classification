@@ -11,5 +11,5 @@ class RunStatistics:
     epoch_loss: float
     epoch_acc: float
 
-    def get_conf_matrix_filename(self):
+    def get_conf_matrix_filename(self) -> str:
         return f'{self.model}_{self.cross_validation_iteration}.xlsx'

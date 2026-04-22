@@ -1,5 +1,3 @@
-from __future__ import print_function, division
-
 import copy
 import csv
 import itertools
@@ -8,67 +6,72 @@ import shutil
 import sys
 import time
 from dataclasses import asdict
-from typing import List
 
 import matplotlib.pyplot as plt
-import numpy
 import numpy as np
-import pandas
+import pandas as pd
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
 from torch.optim import lr_scheduler
+from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
+from torchvision.models import (
+    ResNet18_Weights,
+    ResNet50_Weights,
+    ResNet101_Weights,
+    ResNet152_Weights,
+)
 
 from run_statistics import RunStatistics
 from preprocess_images import GROUP_COUNT
 
-PROCESSED_DATA_DIR = 'data_processed'
-ACTIVE_DATA_DIR = 'data_active_dir'
+PROCESSED_DATA_DIR = "data_processed"
+ACTIVE_DATA_DIR = "data_active_dir"
+CONFUSION_MATRIX_DIR = "confusion_matrix_output"
 STATISTICS_FILENAME = "test_statistics.csv"
+
+IMAGE_CROP = (790, 340)
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+BATCH_SIZE = 5
+NUM_WORKERS = 4
+LR = 0.001
+MOMENTUM = 0.9
+LR_STEP_SIZE = 7
+LR_GAMMA = 0.1
+
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 
-def get_model(model):
-    match model:
+def get_model(model_name: str) -> nn.Module:
+    match model_name:
         case "resnet18":
-            return models.resnet18(pretrained=True)
+            return models.resnet18(weights=ResNet18_Weights.DEFAULT)
         case "resnet34":
-            return models.resnet34(pretrained=False)
+            return models.resnet34(weights=None)
         case "resnet50":
-            return models.resnet50(pretrained=True)
+            return models.resnet50(weights=ResNet50_Weights.DEFAULT)
         case "resnet101":
-            return models.resnet101(pretrained=True)
+            return models.resnet101(weights=ResNet101_Weights.DEFAULT)
         case "resnet152":
-            return models.resnet152(pretrained=True)
+            return models.resnet152(weights=ResNet152_Weights.DEFAULT)
         case _:
-            Exception(f"Unknown model: {model}")
+            raise ValueError(f"Unknown model: {model_name!r}")
 
 
-def get_data(current_val_group):
+def get_data(current_val_group: int) -> tuple[dict[str, DataLoader], dict[str, int], list[str]]:
     data_transforms = {
-        'train': transforms.Compose([
-            # https://www.geeksforgeeks.org/randomresizedcrop-method-in-python-pytorch/
-            # https://pytorch.org/vision/main/generated/torchvision.transforms.RandomResizedCrop.html
-            # transforms.RandomResizedCrop(224),
-            # https://pytorch.org/vision/main/generated/torchvision.transforms.RandomHorizontalFlip.html
-            # transforms.RandomHorizontalFlip(),
-            # https://pytorch.org/vision/main/generated/torchvision.transforms.ToTensor.html
-            # transforms.Resize(256),
-            transforms.CenterCrop([790, 340]),
+        "train": transforms.Compose([
+            transforms.CenterCrop(IMAGE_CROP),
             transforms.ToTensor(),
-            # https://pytorch.org/docs/stable/generated/torch.nn.functional.normalize.html
-            # https://stackoverflow.com/questions/58151507/why-pytorch-officially-use-mean-0-485-0-456-0-406-and-std-0-229-0-224-0-2
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ]),
-        'val': transforms.Compose([
-            # transforms.Resize(256),
-            transforms.CenterCrop([790, 340]),
-            # transforms.Resize(256),
+        "val": transforms.Compose([
+            transforms.CenterCrop(IMAGE_CROP),
             transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ]),
     }
 
@@ -82,216 +85,215 @@ def get_data(current_val_group):
         for category in os.listdir(os.path.join(PROCESSED_DATA_DIR, str(i))):
             for file in os.listdir(os.path.join(PROCESSED_DATA_DIR, str(i), category)):
                 destination = os.path.join(target_folder, category)
-                if not os.path.exists(destination):
-                    os.makedirs(destination)
-                shutil.copy2(os.path.join(PROCESSED_DATA_DIR, str(i), category, file), os.path.join(destination, file))
+                os.makedirs(destination, exist_ok=True)
+                shutil.copy2(
+                    os.path.join(PROCESSED_DATA_DIR, str(i), category, file),
+                    os.path.join(destination, file),
+                )
 
-    image_datasets = {x: datasets.ImageFolder(os.path.join(ACTIVE_DATA_DIR, x),
-                                              data_transforms[x])
-                      for x in ['train', 'val']}
-    dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=5,
-                                                  shuffle=True, num_workers=4)
-                   for x in ['train', 'val']}
-    dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
-    class_names = image_datasets['train'].classes
+    image_datasets = {
+        x: datasets.ImageFolder(os.path.join(ACTIVE_DATA_DIR, x), data_transforms[x])
+        for x in ["train", "val"]
+    }
+    dataloaders = {
+        x: DataLoader(image_datasets[x], batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
+        for x in ["train", "val"]
+    }
+    dataset_sizes = {x: len(image_datasets[x]) for x in ["train", "val"]}
+    class_names = image_datasets["train"].classes
     return dataloaders, dataset_sizes, class_names
 
 
-def load_statistics():
-    statistics = []
-    if os.path.exists(STATISTICS_FILENAME):
-        with open(STATISTICS_FILENAME) as file:
-            reader = csv.DictReader(file)
-            for row in reader:
-                row: dict
-                statistics.append(
-                    RunStatistics(cross_validation_iteration=row['cross_validation_iteration'],
-                                  model=row["model"],
-                                  epoch=row["epoch"],
-                                  epoch_total=row["epoch_total"],
-                                  phase=row["phase"],
-                                  epoch_loss=row["epoch_loss"],
-                                  epoch_acc=row["epoch_acc"])
+def save_prediction_image(
+    tensor: torch.Tensor,
+    title: str | None,
+    filename: str,
+    path: str,
+) -> None:
+    inp = tensor.numpy().transpose((1, 2, 0))
+    inp = np.array(IMAGENET_STD) * inp + np.array(IMAGENET_MEAN)
+    inp = np.clip(inp, 0, 1)
+    fig, ax = plt.subplots()
+    ax.imshow(inp)
+    if title is not None:
+        ax.set_title(title)
+    os.makedirs(path, exist_ok=True)
+    fig.savefig(os.path.join(path, f"{filename}.png"))
+    plt.close(fig)
+
+
+def train_model(
+    model: nn.Module,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer,
+    scheduler: lr_scheduler.StepLR,
+    dataloaders: dict[str, DataLoader],
+    dataset_sizes: dict[str, int],
+    model_name: str,
+    iteration: int,
+    statistics: list[RunStatistics],
+    num_epochs: int,
+) -> nn.Module:
+    since = time.time()
+    best_model_weights = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+
+    for epoch in range(num_epochs):
+        print(f"Epoch {epoch + 1}/{num_epochs}")
+
+        for phase in ["train", "val"]:
+            model.train() if phase == "train" else model.eval()
+
+            running_loss = 0.0
+            running_corrects = 0
+
+            for inputs, labels in dataloaders[phase]:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                optimizer.zero_grad()
+
+                with torch.set_grad_enabled(phase == "train"):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
+                    if phase == "train":
+                        loss.backward()
+                        optimizer.step()
+
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+
+            if phase == "train":
+                scheduler.step()
+
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.float() / dataset_sizes[phase]
+
+            statistics.append(
+                RunStatistics(iteration, model_name, epoch + 1, num_epochs, phase, epoch_loss, epoch_acc.item())
+            )
+            save_statistics(statistics)
+
+            if phase == "val" and epoch_acc > best_acc:
+                best_acc = epoch_acc
+                best_model_weights = copy.deepcopy(model.state_dict())
+
+    elapsed = time.time() - since
+    print(f"Training complete in {elapsed // 60:.0f}m {elapsed % 60:.0f}s")
+    model.load_state_dict(best_model_weights)
+    return model
+
+
+def evaluate_model(
+    model: nn.Module,
+    dataloaders: dict[str, DataLoader],
+    class_names: list[str],
+) -> pd.DataFrame:
+    conf_matrix = pd.DataFrame(
+        np.zeros((len(class_names), len(class_names))),
+        index=class_names,
+        columns=class_names,
+    )
+
+    model.eval()
+    with torch.no_grad():
+        for i, (inputs, labels) in enumerate(dataloaders["val"]):
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
+
+            for j in range(inputs.size(0)):
+                true_class = class_names[labels[j]]
+                pred_class = class_names[preds[j]]
+                conf_matrix.loc[true_class, pred_class] += 1
+                correctly_classified = pred_class == true_class
+                path = os.path.join(
+                    "output", true_class,
+                    "Správně zařazené" if correctly_classified else pred_class,
                 )
+                title = true_class if correctly_classified else f"{true_class}, predicted as {pred_class}"
+                save_prediction_image(inputs.cpu().data[j], title=title, filename=f"{i}_{j}", path=path)
+
+    return conf_matrix
+
+
+def load_statistics() -> list[RunStatistics]:
+    if not os.path.exists(STATISTICS_FILENAME):
+        return []
+    statistics = []
+    with open(STATISTICS_FILENAME) as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            statistics.append(
+                RunStatistics(
+                    cross_validation_iteration=row["cross_validation_iteration"],
+                    model=row["model"],
+                    epoch=row["epoch"],
+                    epoch_total=row["epoch_total"],
+                    phase=row["phase"],
+                    epoch_loss=row["epoch_loss"],
+                    epoch_acc=row["epoch_acc"],
+                )
+            )
     return statistics
 
 
-def check_if_complete(model, statistics, num_epochs):
-    match_items = [x for x in statistics if x.model == model]
-    return len(match_items) == num_epochs * 2 * GROUP_COUNT
-
-
-def save_statistics(statistics):
+def save_statistics(statistics: list[RunStatistics]) -> None:
+    if not statistics:
+        return
     dict_list = [asdict(stat) for stat in statistics]
-    fieldnames = dict_list[0].keys() if dict_list else []
-    with open(STATISTICS_FILENAME, mode='w', newline='') as file:
+    fieldnames = dict_list[0].keys()
+    with open(STATISTICS_FILENAME, mode="w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(dict_list)
 
 
-def run_image_classification(model_name, iteration, statistics, num_epochs):
+def check_if_complete(model_name: str, statistics: list[RunStatistics], num_epochs: int) -> bool:
+    matching = [s for s in statistics if s.model == model_name]
+    return len(matching) == num_epochs * 2 * GROUP_COUNT
+
+
+def run_image_classification(
+    model_name: str,
+    iteration: int,
+    statistics: list[RunStatistics],
+    num_epochs: int,
+) -> None:
     cudnn.benchmark = True
-    plt.ion()
     dataloaders, dataset_sizes, class_names = get_data(iteration)
 
-    def imshow(inp, title=None, filename=None, path=None):
-        """Imshow for Tensor."""
-        inp = inp.numpy().transpose((1, 2, 0))
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
-        inp = std * inp + mean
-        inp = np.clip(inp, 0, 1)
-        plt.imshow(inp)
-        if title is not None:
-            plt.title(title)
-        if filename is not None:
-            if not os.path.exists(path):
-                os.makedirs(path)
-            plt.savefig(os.path.join(path, f"{filename}.png"))
-
-    # Get a batch of training data
-    inputs, classes = next(iter(dataloaders['train']))
-
-    # Make a grid from batch
-    out = torchvision.utils.make_grid(inputs)
-
-    # imshow(out, title=[class_names[x] for x in classes])
-
-    def train_model(model, criterion, optimizer, scheduler):
-        since = time.time()
-
-        best_model_wts = copy.deepcopy(model.state_dict())
-        best_acc = 0.0
-
-        for epoch in range(num_epochs):
-            print(f'Epoch {epoch + 1}/{num_epochs}')
-
-            # Each epoch has a training and validation phase
-            for phase in ['train', 'val']:
-                if phase == 'train':
-                    model.train()  # Set model to training mode
-                else:
-                    model.eval()  # Set model to evaluate mode
-
-                running_loss = 0.0
-                running_corrects = 0
-
-                # Iterate over data.
-                for inputs, labels in dataloaders[phase]:
-                    inputs = inputs.to(device)
-                    labels = labels.to(device)
-
-                    # zero the parameter gradients
-                    optimizer.zero_grad()
-
-                    # forward
-                    # track history if only in train
-                    with torch.set_grad_enabled(phase == 'train'):
-                        outputs = model(inputs)
-                        _, preds = torch.max(outputs, 1)
-                        loss = criterion(outputs, labels)
-
-                        # backward + optimize only if in training phase
-                        if phase == 'train':
-                            loss.backward()
-                            optimizer.step()
-
-                    # statistics
-                    running_loss += loss.item() * inputs.size(0)
-                    running_corrects += torch.sum(preds == labels.data)
-                if phase == 'train':
-                    scheduler.step()
-
-                epoch_loss = running_loss / dataset_sizes[phase]
-                epoch_acc = running_corrects.float() / dataset_sizes[phase]
-
-                statistics.append(
-                    RunStatistics(iteration, model_name, epoch + 1, num_epochs, phase, epoch_loss, epoch_acc.item()))
-                save_statistics(statistics)
-
-                # deep copy the model
-                if phase == 'val' and epoch_acc > best_acc:
-                    best_acc = epoch_acc
-                    best_model_wts = copy.deepcopy(model.state_dict())
-
-        time_elapsed = time.time() - since
-        print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
-
-        # load best model weights
-        model.load_state_dict(best_model_wts)
-        return model
-
-    confusion_matrix = numpy.zeros((len(class_names), len(class_names)))
-    confusion_matrix = pandas.DataFrame(confusion_matrix, index=class_names, columns=class_names)
-
-    def visualize_model(model, num_images=6):
-        print("Model visualization")
-        was_training = model.training
-        model.eval()
-        images_so_far = 0
-        fig = plt.figure()
-
-        with torch.no_grad():
-            for i, (inputs, labels) in enumerate(dataloaders['val']):
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-                outputs = model(inputs)
-                _, preds = torch.max(outputs, 1)
-
-                for j in range(inputs.size()[0]):
-                    correct_class = class_names[labels[j]]
-                    predicted_class = class_names[preds[j]]
-                    confusion_matrix.loc[correct_class, predicted_class] += 1
-                    path = os.path.join("output", correct_class,
-                                        "Správně zařazené" if predicted_class == correct_class else predicted_class
-                                        )
-                    title = correct_class if predicted_class == correct_class \
-                        else f"{correct_class}, predicted as {predicted_class}"
-                    imshow(inputs.cpu().data[j], title=title, filename=f"{i}_{j}", path=path)
-
-                    if images_so_far == num_images:
-                        model.train(mode=was_training)
-                        return
-            model.train(mode=was_training)
-
-    model_ft = get_model(model_name)
-
-    num_ftrs = model_ft.fc.in_features
-    # Here the size of each output sample is set to 2.
-    # Alternatively, it can be generalized to nn.Linear(num_ftrs, len(class_names)).
-    model_ft.fc = nn.Linear(num_ftrs, len(class_names))
-    model_ft = model_ft.to(device)
+    model = get_model(model_name)
+    num_features = model.fc.in_features
+    model.fc = nn.Linear(num_features, len(class_names))
+    model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=LR, momentum=MOMENTUM)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=LR_STEP_SIZE, gamma=LR_GAMMA)
 
-    # Observe that all parameters are being optimized
-    optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
+    model = train_model(
+        model, criterion, optimizer, scheduler,
+        dataloaders, dataset_sizes, model_name, iteration, statistics, num_epochs,
+    )
 
-    # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
-    model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
-    visualize_model(model_ft)
-    confusion_matrix.to_excel(os.path.join("confusion_matrix_output", f"{model_name}_{iteration}.xlsx"))
+    conf_matrix = evaluate_model(model, dataloaders, class_names)
+    os.makedirs(CONFUSION_MATRIX_DIR, exist_ok=True)
+    conf_matrix.to_excel(os.path.join(CONFUSION_MATRIX_DIR, f"{model_name}_{iteration}.xlsx"))
 
 
-def main(num_epochs, models):
+def main(num_epochs: int, model_names: list[str]) -> None:
     statistics = load_statistics()
-    statistics_new = []
-    iterations = range(1, GROUP_COUNT + 1)
-    for model in models:
-        model_complete = check_if_complete(model, statistics, num_epochs)
-        if model_complete:
-            for item in statistics:
-                if item.model == model:
-                    statistics_new.append(item)
-    statistics = statistics_new
+
+    complete = {m for m in model_names if check_if_complete(m, statistics, num_epochs)}
+    statistics = [s for s in statistics if s.model in complete]
     save_statistics(statistics)
-    for model, i in itertools.product(models, iterations):
-        model_complete = check_if_complete(model, statistics, num_epochs)
-        if not model_complete:
-            run_image_classification(model, i, statistics, num_epochs)
+
+    for model_name, iteration in itertools.product(model_names, range(1, GROUP_COUNT + 1)):
+        if not check_if_complete(model_name, statistics, num_epochs):
+            run_image_classification(model_name, iteration, statistics, num_epochs)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main(int(sys.argv[1]), sys.argv[2:])

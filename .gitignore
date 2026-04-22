@@ -13,3 +13,9 @@
 /data_active_dir/
 /confusion_matrix_output/
 /test_statistics.csv
+*.csv
+*.xlsx
+*.DS_Store
+output.zip
+test_statistics_*.pdf
+resnet_*.pdf
